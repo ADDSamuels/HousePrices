@@ -1,117 +1,110 @@
 import os
 import math
-##Used ChatGPT
+import csv
 # ==============================
 # Step 0: Helper function to map lat/lon to 500m blocks
 # ==============================
 def latlon_to_block(lat, lon, block_size_m=500):
-    """
-    Convert latitude and longitude into grid indices representing ~500m blocks.
-    Returns (lat_block, lon_block) as integers.
-    """
-    lat_block_size = block_size_m / 111000  # 1 degree latitude ≈ 111 km
-    lon_block_size = block_size_m / (111000 * math.cos(math.radians(lat)))  # longitude scales with latitude
-
-    lat_block = int(lat // lat_block_size)
-    lon_block = int(lon // lon_block_size)
-
-    return lat_block, lon_block
+    """Convert lat/lon into ~500m grid indices."""
+    lat_block_size = block_size_m / 111000  # ~0.0045° per 500m
+    lon_block_size = block_size_m / (111000 * math.cos(math.radians(lat)))
+    return int(lat // lat_block_size), int(lon // lon_block_size)
 
 # ==============================
 # Step 1: Load postcode CSV files into memory
 # ==============================
-postcode_data = {}  # key = postcode letters, value = list of [postcode, start_year, end_year]
+postcode_data = {}  # key = full postcode, value = list of (start_year, end_year, lat, lon)
 
 folder = "post/Data/multi_csv"
 
 for filename in os.listdir(folder):
     if filename.endswith(".csv"):
-        # Extract postcode letters from filename (assumes format like 'data_ABC.csv')
-        code = filename.split("_")[-1].split(".")[0]
         with open(os.path.join(folder, filename), "r") as f:
-            postcode_data[code] = [line.strip().split(",") for line in f]
+            next(f)  # skip header row "pcds,dointr,doterm,lat,long"
+            for line in f:
+                cols = line.rstrip("\n").split(",")
+                if len(cols) < 5:
+                    continue  # skip malformed lines
+
+                postcode = cols[0].strip()
+                start_year = int(cols[1]) if cols[1] else 0
+                end_year = int(cols[2]) if cols[2] else float("inf")
+                lat = float(cols[3])
+                lon = float(cols[4])
+
+                postcode_data.setdefault(postcode, []).append(
+                    (start_year, end_year, lat, lon)
+                )
 
 # ==============================
 # Step 2: Prepare dictionary for 500m blocks
 # ==============================
 # key = (lat_block, lon_block), value = list of entries
-# each entry: [price, postcode, number, subnumber, streetname, memory]
+# each entry = (price, postcode, number, subnumber, streetname, memory)
 blocks = {}
 
-def add_to_block(lat, lon, price, postcode, number, subnumber, streetname, memory=""):
-    """
-    Add an entry to the appropriate 500m block in the dictionary.
-    """
+def add_to_block(lat, lon, price, postcode, soldyear2, number, subnumber, streetname, memory=""):
+    """Add an entry into the correct 500m block."""
     lat_block, lon_block = latlon_to_block(lat, lon)
     key = (lat_block, lon_block)
-
     if key not in blocks:
         blocks[key] = []
-
-    blocks[key].append([price, postcode, number, subnumber, streetname, memory])
+    blocks[key].append((price, postcode, soldyear2, number, subnumber, streetname, memory))
 
 # ==============================
 # Step 3: Process main CSV
 # ==============================
 with open("prices3.csv", "r") as f:
     for line_number, line in enumerate(f, start=1):
-        items = line.strip().split(",")
+        items = line.rstrip("\n").split(",")
 
-        # Extract values from CSV
-        price = int(items[0].strip())           # assuming first column is price
-        soldyear = int(items[1].strip()[:6])      # first 6 chars of year column
-        soldpost = items[2].strip()               # postcode
-        number = items[3].strip()                 # custom number field
-        subnumber = items[4].strip()              # custom subnumber field
-        #lat = float(items[3].strip())             # latitude
-        #lon = float(items[4].strip())             # longitude
-        streetname = items[5].strip()                 # streetname
-        memory = items[6].strip()              # memory
+        price = int(items[0])
+        soldyear = int(items[1][:6])  # first 6 chars
+        soldyear2 = int(items[1])
+        soldpost = items[2]
+        number = items[3]
+        subnumber = items[4]
+        streetname = items[5]
+        memory = items[6]
 
         # ==============================
-        # Extract postcode letters (before first number)
+        # Lookup preloaded postcode data (with while loop)
         # ==============================
-        postcode_letters = ""
-        for char in soldpost:
-            if char.isdigit():
-                break
-            if char.isalpha():
-                postcode_letters += char
-            else:
-                break
-
-        # ==============================
-        # Lookup preloaded postcode data
-        # ==============================
-        if line_number % 1000 == 0:
-            print(line_number)
         postcodeFound = False
         while not postcodeFound:
-            for items2 in postcode_data.get(postcode_letters, []):
-                if items2[0] == soldpost:
-                    start_year = int(items2[1])
-                    end_year = int(items2[2]) if items2[2] else float('inf')
-                    if start_year <= soldyear < end_year:
-                        postcodeFound = True
-                        lat, long = float(items2[3]), float(items2[4])
-                        break
-                    else:
-                        # Debugging info if year doesn't match
-                        #print(f"Line {line_number} -> soldyear: {soldyear}, soldpost: {soldpost}, {postcode_letters}")
-                        #print(items2)
-                        a =1
+            for start_year, end_year, lat, lon in postcode_data.get(soldpost, []):
+                if start_year <= soldyear < end_year:
+                    postcodeFound = True
+                    break
             else:
-                #print(f"Line {line_number} -> no matching postcode entry found for {soldpost}")
+                # no match, still exit loop
                 postcodeFound = True
- 
 
         # ==============================
-        # Add the entry to the appropriate 500m block
+        # Add entry to block if postcode matched
         # ==============================
-        add_to_block(lat, long, price, soldpost, number, subnumber, streetname, memory)  # memory 
+        if postcodeFound:
+            add_to_block(lat, lon, price, soldpost, soldyear2, number, subnumber, streetname, memory)
+
+        # Progress indicator
+        if line_number % 10000 == 0:
+            print(f"Processed {line_number} rows...")
 
 # ==============================
 # Step 4: Example usage of blocks
 # ==============================
+output_folder = "blocks_output"
+os.makedirs(output_folder, exist_ok=True)  # create if it doesn't exist
+
 for block_key, entries in blocks.items():
-    print(f"Block {block_key} contains {len(entries)} entries")
+    lat_block, lon_block = block_key
+    filename = f"block_{lat_block}_{lon_block}.csv"
+    filepath = os.path.join(output_folder, filename)
+
+    # Write CSV for this block
+    with open(filepath, "w", newline="") as f:
+        writer = csv.writer(f)
+        # Optional header
+        writer.writerow(["price", "postcode", "soldyear", "number", "subnumber", "streetname", "memory"])
+        # Write all entries
+        writer.writerows(entries)
