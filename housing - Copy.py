@@ -43,7 +43,7 @@ def add_to_block(lat, lon, price, soldyear, postcode, number, subnumber, streetn
         blocks[key] = {}
     
     # Use (postcode, streetname) as property key
-    prop_key = (postcode, streetname)
+    prop_key = (postcode, streetname, number, subnumber)
     
     if prop_key not in blocks[key]:
         blocks[key][prop_key] = {
@@ -111,12 +111,12 @@ for block_key, properties in blocks.items():
     with open(filepath, "w", newline="") as f:
         writer = csv.writer(f)
         #writer.writerow(["postcode", "streetname", "number", "subnumber", "memory", "prices", "soldyears"])
-        for (postcode, streetname), info in properties.items():
+        for (postcode, streetname, number, subnumber), info in properties.items():
             writer.writerow([
                 postcode,
                 streetname,
-                info["number"],
-                info["subnumber"],
+                number,
+                subnumber,
                 info["memory"],
                 ";".join(map(str, info["prices"])),      # join prices as string
                 ";".join(map(str, info["soldyears"]))    # join sold years as string
