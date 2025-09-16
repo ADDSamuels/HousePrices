@@ -1,65 +1,73 @@
 import os
 import math
 import csv
+
 # ==============================
-# Step 0: Helper function to map lat/lon to 500m blocks
+# Helper: map lat/lon to 500m blocks
 # ==============================
 def latlon_to_block(lat, lon, block_size_m=500):
-    """Convert lat/lon into ~500m grid indices."""
-    lat_block_size = block_size_m / 111000  # ~0.0045° per 500m
+    lat_block_size = block_size_m / 111000
     lon_block_size = block_size_m / (111000 * math.cos(math.radians(lat)))
     return int(lat // lat_block_size), int(lon // lon_block_size)
 
 # ==============================
-# Step 1: Load postcode CSV files into memory
+# Load postcode CSV files into memory
 # ==============================
-postcode_data = {}  # key = full postcode, value = list of (start_year, end_year, lat, lon)
-
+postcode_data = {}
 folder = "post/Data/multi_csv"
 
 for filename in os.listdir(folder):
     if filename.endswith(".csv"):
         with open(os.path.join(folder, filename), "r") as f:
-            next(f)  # skip header row "pcds,dointr,doterm,lat,long"
+            next(f)  # skip header
             for line in f:
                 cols = line.rstrip("\n").split(",")
                 if len(cols) < 5:
-                    continue  # skip malformed lines
-
+                    continue
                 postcode = cols[0].strip()
                 start_year = int(cols[1]) if cols[1] else 0
                 end_year = int(cols[2]) if cols[2] else float("inf")
                 lat = float(cols[3])
                 lon = float(cols[4])
-
-                postcode_data.setdefault(postcode, []).append(
-                    (start_year, end_year, lat, lon)
-                )
+                postcode_data.setdefault(postcode, []).append((start_year, end_year, lat, lon))
 
 # ==============================
-# Step 2: Prepare dictionary for 500m blocks
+# Block storage with property consolidation
 # ==============================
-# key = (lat_block, lon_block), value = list of entries
-# each entry = (price, postcode, number, subnumber, streetname, memory)
-blocks = {}
+blocks = {}  # key = (lat_block, lon_block), value = dict with property tuples
 
-def add_to_block(lat, lon, price, postcode, soldyear2, number, subnumber, streetname, memory=""):
-    """Add an entry into the correct 500m block."""
+def add_to_block(lat, lon, price, soldyear, postcode, number, subnumber, streetname, memory):
     lat_block, lon_block = latlon_to_block(lat, lon)
     key = (lat_block, lon_block)
     if key not in blocks:
-        blocks[key] = []
-    blocks[key].append((price, postcode, soldyear2, number, subnumber, streetname, memory))
+        blocks[key] = {}
+    
+    # Use (postcode, streetname) as property key
+    prop_key = (postcode, streetname)
+    
+    if prop_key not in blocks[key]:
+        blocks[key][prop_key] = {
+            "number": number,
+            "subnumber": subnumber,
+            "memory": memory,
+            "prices": [],
+            "soldyears": []
+        }
+    
+    # Append sale info to the lists
+    blocks[key][prop_key]["prices"].append(price)
+    blocks[key][prop_key]["soldyears"].append(soldyear)
 
 # ==============================
-# Step 3: Process main CSV
+# Process main CSV
 # ==============================
+empty = [] #
 with open("prices3.csv", "r") as f:
     for line_number, line in enumerate(f, start=1):
         items = line.rstrip("\n").split(",")
 
         price = int(items[0])
-        soldyear = int(items[1][:6])  # first 6 chars
+        soldyear = int(items[1][:6])
         soldyear2 = int(items[1])
         soldpost = items[2]
         number = items[3]
@@ -67,9 +75,7 @@ with open("prices3.csv", "r") as f:
         streetname = items[5]
         memory = items[6]
 
-        # ==============================
-        # Lookup preloaded postcode data (with while loop)
-        # ==============================
+        # Lookup postcode
         postcodeFound = False
         while not postcodeFound:
             for start_year, end_year, lat, lon in postcode_data.get(soldpost, []):
@@ -77,34 +83,41 @@ with open("prices3.csv", "r") as f:
                     postcodeFound = True
                     break
             else:
-                # no match, still exit loop
                 postcodeFound = True
+                empty = str(line_number)+"~" + line
 
-        # ==============================
-        # Add entry to block if postcode matched
-        # ==============================
         if postcodeFound:
-            add_to_block(lat, lon, price, soldpost, soldyear2, number, subnumber, streetname, memory)
+            add_to_block(lat, lon, price, soldyear2, soldpost, number, subnumber, streetname, memory)
 
-        # Progress indicator
-        if line_number % 10000 == 0:
+        if line_number % 50000 == 0:
             print(f"Processed {line_number} rows...")
 
 # ==============================
-# Step 4: Example usage of blocks
+# Write blocks to disk
 # ==============================
 output_folder = "blocks_output"
-os.makedirs(output_folder, exist_ok=True)  # create if it doesn't exist
-
-for block_key, entries in blocks.items():
+os.makedirs(output_folder, exist_ok=True)
+print("deposit")
+with open('lines.txt', 'w') as f:
+    for line in empty:
+        f.write(f"{line}\n")
+empty = []
+print("empty finished")
+for block_key, properties in blocks.items():
     lat_block, lon_block = block_key
-    filename = f"block_{lat_block}_{lon_block}.csv"
+    filename = f"{lat_block}_{lon_block}.csv"
     filepath = os.path.join(output_folder, filename)
 
-    # Write CSV for this block
     with open(filepath, "w", newline="") as f:
         writer = csv.writer(f)
-        # Optional header
-        writer.writerow(["price", "postcode", "soldyear", "number", "subnumber", "streetname", "memory"])
-        # Write all entries
-        writer.writerows(entries)
+        #writer.writerow(["postcode", "streetname", "number", "subnumber", "memory", "prices", "soldyears"])
+        for (postcode, streetname), info in properties.items():
+            writer.writerow([
+                postcode,
+                streetname,
+                info["number"],
+                info["subnumber"],
+                info["memory"],
+                ";".join(map(str, info["prices"])),      # join prices as string
+                ";".join(map(str, info["soldyears"]))    # join sold years as string
+            ])

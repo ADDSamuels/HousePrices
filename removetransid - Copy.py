@@ -1,3 +1,5 @@
+from io import StringIO
+import csv
 input_file = "prices.csv"
 output_file = "prices3.csv"
 
@@ -6,8 +8,22 @@ with open(input_file, "r", encoding="utf-8") as infile, \
     
     for line in infile:
         # Strip newline
+        #line = re.sub(r'"([^"]*?),([^"]*?)"', r'"\1:\2"', line)
         
+        def replace_commas_inside_quotes_csv(line):
+            reader = csv.reader([line])
+            fields = next(reader)
+            # Replace commas only inside each field
+            fields2 = [f.replace(',', ':') for f in fields]
+            out = StringIO()
+            # Write with all fields quoted to match your format
+            writer = csv.writer(out, quoting=csv.QUOTE_ALL, lineterminator='')
+            writer.writerow(fields2)
+            return out.getvalue()
+        line = replace_commas_inside_quotes_csv(line)
+        #print(line)
         line = line.strip()
+        
         
         # Remove leading/trailing quote, then split by "," safely
         parts = line.strip('"').split('","')
