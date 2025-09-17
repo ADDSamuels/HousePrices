@@ -1,122 +1,171 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
   <title>Postcode Lookup</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; padding: 10px; }
-    label, select, input, button { margin: 5px; }
-    #map { height: 500px; margin-top: 15px; }
+    body { font-family: sans-serif; margin: 1em; }
+    #map { width: 100%; height: 500px; margin-top: 1em; }
+    label, select, input, button { margin: 0.25em; }
   </style>
 </head>
 <body>
-  <h3>Find Property by Postcode</h3>
-  <label for="postcode">Postcode:</label>
-  <input type="text" id="postcode" minlength="5" maxlength="8" />
-  <button id="searchBtn">Search</button>
-  
-  <br>
-  <label for="street">Street:</label>
-  <select id="street"></select>
-  
-  <label for="number">Number:</label>
-  <select id="number"></select>
-  
+
+  <h2>Postcode Lookup</h2>
+
+  <label for="postcode">Enter postcode: </label>
+  <input type="text" id="postcode" name="postcode" minlength="5" maxlength="8">
+  <button type="button" id="searchBtn">Search</button>
+
+  <div>
+    <label for="streetSelect">Street:</label>
+    <select id="streetSelect"></select>
+
+    <label for="numberSelect">Number:</label>
+    <select id="numberSelect"></select>
+  </div>
+
   <div id="map"></div>
 
   <script>
-    const map = L.map("map").setView([51.5, -0.1], 10);
+    // --------------------------
+    // Initialize Leaflet map
+    // --------------------------
+    const map = L.map('map').setView([52.517, 13.388], 9.5);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap contributors"
+      maxZoom: 19,
     }).addTo(map);
 
-    const streetSelect = document.getElementById("street");
-    const numberSelect = document.getElementById("number");
+    let circleLayer = null;
 
-    // Decode block header like "=11288_-28=" into approximate coords
-    function blockKeyToCoords(header) {
-      const m = header.match(/=(\-?\d+)_(-?\d+)=/);
+    // --------------------------
+    // Robust district file fetch
+    // --------------------------
+    async function fetchDistrictFile(postcode) {
+      if (!postcode) throw new Error("No postcode given");
+
+      // Match 1–2 leading letters
+      const districtMatch = postcode.trim().toUpperCase().match(/^[A-Z]{1,2}/);
+      if (!districtMatch) throw new Error("Invalid postcode: " + postcode);
+      const district = districtMatch[0];
+
+      const relativePath = `districts_output/${encodeURIComponent(district)}.txt`;
+      const url = new URL(relativePath, window.location.href).toString();
+      console.log("Fetching:", url);
+
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`Failed to fetch district file: ${resp.status} ${resp.statusText}`);
+      }
+      const text = await resp.text();
+      return text.trim().split(/\r?\n/);
+    }
+
+    // --------------------------
+    // Decode block header
+    // --------------------------
+    function decodeBlockHeader(headerLine) {
+      // Example: =11288_-28=
+      const m = headerLine.match(/^=(\-?\d+)_(-?\d+)=/);
       if (!m) return null;
-      const latBlock = parseInt(m[1], 10);
-      const lonBlock = parseInt(m[2], 10);
+      return [parseInt(m[1], 10), parseInt(m[2], 10)];
+    }
 
-      // reverse of your Python latlon_to_block, approximate center
-      const latBlockSize = 500 / 111000;
-      const lat = (latBlock + 0.5) * latBlockSize;
-      const lonBlockSize = 500 / (111000 * Math.cos(lat * Math.PI/180));
-      const lon = (lonBlock + 0.5) * lonBlockSize;
+    // --------------------------
+    // Convert block coords to lat/lon
+    // --------------------------
+    function blockToLatLon(latBlock, lonBlock, blockSizeM=500) {
+      const latBlockSize = blockSizeM / 111000;
+      const lat = latBlock * latBlockSize;
+      const lonBlockSize = blockSizeM / (111000 * Math.cos(lat * Math.PI/180));
+      const lon = lonBlock * lonBlockSize;
       return [lat, lon];
     }
 
-    async function fetchDistrict(code) {
-      const resp = await fetch(`/districts_output/${code}.txt`);
-      console.log(code);
-      
-      if (!resp.ok) throw new Error("District file not found");
-      const text = await resp.text();
-      return text.trim().split("\n");
-    }
-
+    // --------------------------
+    // Main search handler
+    // --------------------------
     document.getElementById("searchBtn").addEventListener("click", async () => {
-      const code = document.getElementById("postcode").value.trim().toUpperCase();
-      if (!code) return;
-
-      // Find district prefix (letters before first digit)
-      const district = code.match(/^[A-Z]+/)[0];
+      const postcode = document.getElementById("postcode").value.trim().toUpperCase();
+      if (!postcode) return;
 
       try {
-        const lines = await fetchDistrict(district);
+        const lines = await fetchDistrictFile(postcode);
 
-        const header = lines[0]; // e.g. =11288_-28=
-        const coords = blockKeyToCoords(header);
+        let currentBlock = null;
+        const matches = [];
 
-        // Parse CSV rows (skip header line)
-        const rows = lines.slice(1).map(l => l.split(","));
+        for (const line of lines) {
+          if (line.startsWith("=")) {
+            currentBlock = decodeBlockHeader(line);
+            continue;
+          }
+          const cols = line.split(",");
+          const filePostcode = cols[0].trim().toUpperCase();
+          if (filePostcode === postcode) {
+            matches.push({
+              block: currentBlock,
+              postcode: filePostcode,
+              street: cols[1],
+              number: cols[2],
+              subnumber: cols[3],
+              memory: cols[4],
+              prices: cols[5]?.split(";") || [],
+              years: cols[6]?.split(";") || []
+            });
+          }
+        }
 
-        // Filter rows for this postcode
-        const matches = rows.filter(r => r[0] === code);
-        if (!matches.length) {
-          alert("No data for this postcode");
+        if (matches.length === 0) {
+          alert("No matches found for " + postcode);
           return;
         }
 
-        // Populate street dropdown
+        // Populate street select
+        const streetSelect = document.getElementById("streetSelect");
         streetSelect.innerHTML = "";
-        const streets = [...new Set(matches.map(r => r[1]))];
-        streets.forEach(s => {
+        const streets = [...new Set(matches.map(m => m.street))];
+        streets.forEach(st => {
           const opt = document.createElement("option");
-          opt.value = s;
-          opt.textContent = s;
+          opt.value = st;
+          opt.textContent = st;
           streetSelect.appendChild(opt);
         });
 
-        // Populate numbers when street changes
-        function updateNumbers() {
-          numberSelect.innerHTML = "";
-          const street = streetSelect.value;
-          const nums = matches.filter(r => r[1] === street).map(r => r[2]);
-          nums.forEach(n => {
-            const opt = document.createElement("option");
-            opt.value = n;
-            opt.textContent = n;
-            numberSelect.appendChild(opt);
-          });
-        }
-        updateNumbers();
-        streetSelect.addEventListener("change", updateNumbers);
+        // Populate numbers for first street
+        updateNumberSelect(matches, streets[0]);
 
-        // Draw block circle
-        if (coords) {
-          map.setView(coords, 16);
-          L.circle(coords, {radius: 200, color: "red"}).addTo(map)
-            .bindPopup(`Block ${header}`).openPopup();
+        streetSelect.addEventListener("change", () => {
+          updateNumberSelect(matches, streetSelect.value);
+        });
+
+        // Show map circle for first match
+        const first = matches[0];
+        if (first.block) {
+          const [lat, lon] = blockToLatLon(first.block[0], first.block[1]);
+          if (circleLayer) map.removeLayer(circleLayer);
+          circleLayer = L.circle([lat, lon], { radius: 250, color: "red" }).addTo(map);
+          map.setView([lat, lon], 15);
         }
-      } catch (e) {
-        alert("Error: " + e.message);
+      } catch (err) {
+        console.error(err);
+        alert(err.message);
       }
     });
+
+    function updateNumberSelect(matches, street) {
+      const numberSelect = document.getElementById("numberSelect");
+      numberSelect.innerHTML = "";
+      const nums = matches.filter(m => m.street === street).map(m => m.number);
+      nums.forEach(n => {
+        const opt = document.createElement("option");
+        opt.value = n;
+        opt.textContent = n;
+        numberSelect.appendChild(opt);
+      });
+    }
   </script>
 </body>
 </html>
