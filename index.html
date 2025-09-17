@@ -146,7 +146,7 @@
         if (first.block) {
           const [lat, lon] = blockToLatLon(first.block[0], first.block[1]);
           if (circleLayer) map.removeLayer(circleLayer);
-          circleLayer = L.circle([lat, lon], { radius: 250, color: "red" }).addTo(map);
+          circleLayer = L.circle([lat, lon], { radius: 600, color: "blue" }).addTo(map);
           map.setView([lat, lon], 15);
         }
       } catch (err) {
