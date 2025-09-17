@@ -1,26 +1,122 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HousePrices</title>
+  <meta charset="utf-8" />
+  <title>Postcode Lookup</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 10px; }
+    label, select, input, button { margin: 5px; }
+    #map { height: 500px; margin-top: 15px; }
+  </style>
 </head>
 <body>
-    <div id="map" style="width: 100%; height: 500px"></div>
-<!-- OpenLayers -->
-<script src="https://unpkg.com/ol/dist/ol.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/ol/ol.css">
+  <h3>Find Property by Postcode</h3>
+  <label for="postcode">Postcode:</label>
+  <input type="text" id="postcode" minlength="5" maxlength="8" />
+  <button id="searchBtn">Search</button>
+  
+  <br>
+  <label for="street">Street:</label>
+  <select id="street"></select>
+  
+  <label for="number">Number:</label>
+  <select id="number"></select>
+  
+  <div id="map"></div>
 
-<!-- ol-mapbox-style -->
-<script src="https://unpkg.com/ol-mapbox-style/dist/olms.js"></script>
-<script>
-  const openfreemap = new ol.layer.Group();
-  const map = new ol.Map({
-    layers: [openfreemap],
-    view: new ol.View({center: ol.proj.fromLonLat([13.388, 52.517]), zoom: 9.5}),
-    target: 'map'
-  })
-  olms.apply(openfreemap, 'https://tiles.openfreemap.org/styles/liberty');
-</script>
+  <script>
+    const map = L.map("map").setView([51.5, -0.1], 10);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    const streetSelect = document.getElementById("street");
+    const numberSelect = document.getElementById("number");
+
+    // Decode block header like "=11288_-28=" into approximate coords
+    function blockKeyToCoords(header) {
+      const m = header.match(/=(\-?\d+)_(-?\d+)=/);
+      if (!m) return null;
+      const latBlock = parseInt(m[1], 10);
+      const lonBlock = parseInt(m[2], 10);
+
+      // reverse of your Python latlon_to_block, approximate center
+      const latBlockSize = 500 / 111000;
+      const lat = (latBlock + 0.5) * latBlockSize;
+      const lonBlockSize = 500 / (111000 * Math.cos(lat * Math.PI/180));
+      const lon = (lonBlock + 0.5) * lonBlockSize;
+      return [lat, lon];
+    }
+
+    async function fetchDistrict(code) {
+      const resp = await fetch(`/districts_output/${code}.txt`);
+      console.log(code);
+      
+      if (!resp.ok) throw new Error("District file not found");
+      const text = await resp.text();
+      return text.trim().split("\n");
+    }
+
+    document.getElementById("searchBtn").addEventListener("click", async () => {
+      const code = document.getElementById("postcode").value.trim().toUpperCase();
+      if (!code) return;
+
+      // Find district prefix (letters before first digit)
+      const district = code.match(/^[A-Z]+/)[0];
+
+      try {
+        const lines = await fetchDistrict(district);
+
+        const header = lines[0]; // e.g. =11288_-28=
+        const coords = blockKeyToCoords(header);
+
+        // Parse CSV rows (skip header line)
+        const rows = lines.slice(1).map(l => l.split(","));
+
+        // Filter rows for this postcode
+        const matches = rows.filter(r => r[0] === code);
+        if (!matches.length) {
+          alert("No data for this postcode");
+          return;
+        }
+
+        // Populate street dropdown
+        streetSelect.innerHTML = "";
+        const streets = [...new Set(matches.map(r => r[1]))];
+        streets.forEach(s => {
+          const opt = document.createElement("option");
+          opt.value = s;
+          opt.textContent = s;
+          streetSelect.appendChild(opt);
+        });
+
+        // Populate numbers when street changes
+        function updateNumbers() {
+          numberSelect.innerHTML = "";
+          const street = streetSelect.value;
+          const nums = matches.filter(r => r[1] === street).map(r => r[2]);
+          nums.forEach(n => {
+            const opt = document.createElement("option");
+            opt.value = n;
+            opt.textContent = n;
+            numberSelect.appendChild(opt);
+          });
+        }
+        updateNumbers();
+        streetSelect.addEventListener("change", updateNumbers);
+
+        // Draw block circle
+        if (coords) {
+          map.setView(coords, 16);
+          L.circle(coords, {radius: 200, color: "red"}).addTo(map)
+            .bindPopup(`Block ${header}`).openPopup();
+        }
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    });
+  </script>
 </body>
 </html>
